@@ -97,6 +97,7 @@ optimizer = optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, de
 
 
 model.compile(optimizer = optimizer , loss = "categorical_crossentropy", metrics=["accuracy"])
+print(model.summary())
 
 
 # In[11]:
