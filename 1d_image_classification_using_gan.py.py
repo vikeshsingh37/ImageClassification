@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,11 +19,12 @@ from IPython.display import clear_output
 from keras.layers.normalization import BatchNormalization
 from keras.layers.convolutional import UpSampling2D
 from keras.layers.core import Activation
+from keras.optimizers import Adam
+from tqdm import tqdm
+from sklearn.metrics import accuracy_score
    
 print(device_lib.list_local_devices())
 
-
-# In[2]:
 
 
 # Check how training data looks like
@@ -34,14 +32,9 @@ train_dat = pd.read_csv("D:/Kaggle/digit-recognizer/train.csv")
 train_dat.head()
 
 
-# In[3]:
-
 
 y= train_dat["label"]
 X = train_dat.drop("label", axis = 1)
-
-
-# In[4]:
 
 
 # Data Analysis
@@ -49,15 +42,12 @@ sns.countplot(y)
 X.isnull().any().any()
 
 
-# In[5]:
-
-
 # There are no missing values and the labels 1 to 10 are uniformly distributed
 # Now let's see what actual data looks like
 # First reshape the 1D array to 28*28 pixel of gray scale
 X = X.values.reshape(-1,28,28,1)
-plt.imshow(X[8][:,:,0])
-y[8]
+plt.imshow(X[80][:,:,0], cmap='gray')
+y[80]
 
 
 # In[6]:
@@ -67,21 +57,12 @@ y[8]
 X= X/255
 
 
-# In[7]:
-
-
 # Since this is a classification problem, convert to categorical
 y = to_categorical(y, num_classes= 11)
 y.shape
 
 
-# In[8]:
-
-
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size = 0.1, random_state=42)
-
-
-# In[9]:
 
 
 def discriminator():
@@ -93,16 +74,13 @@ def discriminator():
     model.add(MaxPool2D(pool_size=(2,2)))
     model.add(Dropout(0.2))
     model.add(Flatten())
-    model.add(Dense(11, activation = 'softmax'))
+    model.add(Dense(12, activation = 'softmax'))
     return(model)
-
-
-# In[10]:
 
 
 def generator():
     model = Sequential()
-    model.add(Dense(input_dim=100, output_dim=1024))
+    model.add(Dense(input_dim=100, units=1024))
     model.add(Activation('relu'))
     model.add(Dense(128*7*7))
     model.add(BatchNormalization())
@@ -115,34 +93,29 @@ def generator():
     return model
 
 
-# In[11]:
-
-
-gen_model = generator()
-optimizer = optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-gen_model.compile(optimizer = optimizer , loss = "categorical_crossentropy", metrics=["accuracy"])
-
-
-# In[12]:
-
-
-dis_model = discriminator()
-optimizer = optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-dis_model.compile(optimizer = optimizer , loss = "categorical_crossentropy", metrics=["accuracy"])
-
-
-# In[13]:
-
 
 def gan(g, d):
     model = Sequential()
     model.add(g)
     d.trainable = False
     model.add(d)
+    optimizer = Adam(lr=0.0002, beta_1=0.5)
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer,metrics=["accuracy"])
     return model
 
 
-# In[14]:
+
+dis_model = discriminator()
+#dis_model.add(Dense(1, activation='sigmoid'))
+optimizer = optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+dis_model.compile(optimizer = optimizer , loss = "categorical_crossentropy", metrics=["accuracy"])
+
+gen_model = generator()
+d_on_g = gan(gen_model, dis_model)
+
+noise = np.random.uniform(-1, 1, size=[500, 100])
+gen_img =gen_model.predict_on_batch(noise)
+plt.imshow(gen_img[0][:,:,0],cmap='gray')
 
 
 class Plotacc(keras.callbacks.Callback):
@@ -173,60 +146,47 @@ class Plotacc(keras.callbacks.Callback):
 plot_acc = Plotacc()
 
 
-# In[15]:
+
+batch_size = 1024*2
+batch_count = int( X_train.shape[0]/batch_size)
+#noise = np.random.uniform(-1, 1, size=[int(batch_size/1), 100])
+for ep in range(100):
+    for _ in tqdm(range(batch_count)):
+        print('The epoch is %d'%ep)
+        idx = np.random.randint(0, X_train.shape[0], batch_size)
+        X_train_ep =  X_train[idx]
+        y_train_ep = y_train[idx,:]
+        # Add column for fake or not 
+        y_train_ep = np.concatenate((y_train_ep,np.zeros(batch_size).reshape(batch_size,1)), axis = 1)
+        #y_train_ep = np.ones(batch_size)
+        
+        # Add noise data
+        noise = np.random.uniform(-1, 1, size=[int(batch_size), 100])
+        noise_train_x = gen_model.predict_on_batch(noise)
+        noise_train_y = np.repeat(np.array([0,0,0,0,0,0,0,0,0,0,0]), batch_size).reshape(batch_size,11) 
+        noise_train_y = np.concatenate((noise_train_y,np.ones(batch_size).reshape(batch_size,1)),axis = 1)
+
+        X_train_ep_all = np.concatenate((X_train_ep,noise_train_x))
+        y_train_ep_all = np.concatenate((y_train_ep,noise_train_y))
+        dis_model.trainable  = True
+        y_val_ep = np.concatenate((y_val, np.zeros(y_val.shape[0]).reshape(y_val.shape[0],1)),axis = 1)
+        dis_model.fit(X_train_ep_all, y_train_ep_all, validation_data = (X_val, y_val_ep),epochs=1,verbose = 0, callbacks=[plot_acc])
+        
+        # GAN training
+        y_gan = d_on_g.predict_on_batch(noise)
+        dis_model.trainable  = False
+        noise_train_y[:,11] = np.zeros(batch_size)
+        noise_train_y[:,np.random.randint(0,11)]=np.ones(batch_size)
+        d_on_g.fit(noise,noise_train_y,epochs=1, verbose = 1)
 
 
-noise = []
-for i in range(500):
-    noise.append(np.random.uniform(-1, 1, (1, 100)))
+        gen_img =gen_model.predict_on_batch(noise)
+        plt.imshow(gen_img[0][:,:,0],cmap='gray')
 
-
-# In[16]:
-
-
-for ep in range(50):
-    X_train_ep = X_train
-    y_train_ep = y_train
-    print(ep)
-    for i in range(500):
-        noise_train_x = gen_model.predict(noise[i])
-        noise_train_y = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1.]).reshape(1,11)
-
-        X_train_ep = np.concatenate((X_train_ep,noise_train_x))
-        y_train_ep = np.concatenate((y_train_ep,noise_train_y))
-    
-    dis_model.fit(X_train_ep, y_train_ep, epochs=30, batch_size=80,validation_data = (X_val, y_val),  callbacks=[plot_acc], verbose=0)
-    
-    d_on_g = gan(gen_model, dis_model)
-    d_on_g.compile(loss='binary_crossentropy', optimizer=optimizer)
-    
-    # GAN training
-    y_gan = []
-    for i in range(500):
-        y_gan.append(d_on_g.predict(noise[i]))
-        replace_i = np.random.randint(low=0,high=9,size=1).tolist()[0]
-        #predicted_value = d_on_g.predict(noise[i])
-
-        # Make GAN to learn not to predict 11th element which is noise correctly
-        y_gan[i][:,0:10] = np.array(0)
-        y_gan[i][:,replace_i] = 1
-        d_on_g.fit(noise[i],y_gan[i],epochs=10, verbose = 0)
-    
-    dis_model.trainable = True
-    
-    gen_img =gen_model.predict(noise[np.random.randint(low=0,high=99,size=1).tolist()[0]])
-    plt.imshow(gen_img[0][:,:,0])
-
-
-# In[17]:
-
-
+#Use discriminator for predictions
 X_test = pd.read_csv("D:/Kaggle/digit-recognizer/test.csv")
 X_test = X_test.values.reshape(-1,28,28,1)
 X_test = X_test/255
-
-
-# In[18]:
 
 
 y_test = dis_model.predict(X_test)
@@ -235,22 +195,5 @@ y_test = pd.Series(y_test,name="Label")
 final_output = pd.concat([pd.Series(range(1,28001),name = "ImageId"),y_test],axis = 1)
 
 
-# In[19]:
-
-
 final_output.to_csv("D:/Kaggle/digit-recognizer/submission.csv", index= False)
-
-
-# In[20]:
-
-
-noise = np.random.uniform(0, 10, size=(1, 100)).reshape(1,100)
-gen_img =gen_model.predict(noise)
-plt.imshow(gen_img[0][:,:,0])
-
-
-# In[ ]:
-
-
-
 
